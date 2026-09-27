@@ -2765,12 +2765,23 @@ const importStatus = document.getElementById("import-status");
 const importPreview = document.getElementById("import-preview");
 const btnImportConfirm = document.getElementById("btn-import-confirm");
 const btnImportCancel = document.getElementById("btn-import-cancel");
+const btnAuditMusicXml = document.getElementById("btn-audit-musicxml");
+const auditPanel = document.getElementById("audit-panel");
 
 let pendingImport = null; // 待确认的导入：{ rows, expansion, fileName }
+let pendingFileText = null; // 当前选中文件的文本（结构导入与时值审计共用）
+let auditSeq = 0;           // 审计在途请求序号：只接受最新一次的响应
 
 function showImportStatus(text, kind) {
   importStatus.textContent = text;
   importStatus.className = `import-status${kind ? ` import-${kind}` : ""}`;
+}
+
+/* 换文件 / 取消 / 确认替换：旧审计立即清除，迟到响应不得恢复 */
+function clearAuditPanel() {
+  auditSeq += 1; // 在途响应一律作废
+  auditPanel.classList.add("hidden");
+  auditPanel.innerHTML = "";
 }
 
 function hideImportPanel() {
@@ -2778,6 +2789,9 @@ function hideImportPanel() {
   importPreview.classList.add("hidden");
   btnImportConfirm.disabled = true;
   pendingImport = null;
+  pendingFileText = null;
+  btnAuditMusicXml.disabled = true;
+  clearAuditPanel();
   fileInput.value = "";
 }
 
@@ -2788,6 +2802,9 @@ fileInput.addEventListener("change", async () => {
   const file = fileInput.files && fileInput.files[0];
   if (!file) return;
   clearErrors();
+  clearAuditPanel(); // 换文件：旧审计立即清除，迟到响应不得恢复
+  pendingFileText = null;
+  btnAuditMusicXml.disabled = true;
   importPanel.classList.remove("hidden");
   importPreview.classList.add("hidden");
   btnImportConfirm.disabled = true;
@@ -2801,6 +2818,8 @@ fileInput.addEventListener("change", async () => {
     showImportStatus("读取本地文件失败，请重试。", "error");
     return;
   }
+  pendingFileText = text; // 审计与结构导入共用同一份文件文本
+  btnAuditMusicXml.disabled = false;
 
   let resp;
   try {
@@ -2928,6 +2947,132 @@ btnImportConfirm.addEventListener("click", () => {
   markExcerptStale(); // 整体替换：摘谱预览同样失效
   doExpand(); // 与“载入示例”一致：替换后立即展开新谱面
 });
+
+/* =========================================================================
+   MusicXML 小节时值审计
+   -------------------------------------------------------------------------
+   - 与结构导入共用同一文件选择：选定本地文件后可单独点“小节时值审计”，
+     POST /api/audit-musicxml 只核对各声部时值，不替换录入表格；
+   - 缺拍 / 非和弦重叠 / 越过小节边界按小节与声部列出有理数拍位；
+     缺少 divisions、非法 duration、负拍位游标、孤立 chord 按源小节报错，
+     不显示“通过”；
+   - 换文件 / 取消 / 确认替换立即清除旧审计；自增序号保证迟到响应不得恢复。
+   ======================================================================== */
+
+btnAuditMusicXml.addEventListener("click", async () => {
+  if (pendingFileText === null) return;
+  const seq = ++auditSeq;
+  auditPanel.classList.remove("hidden");
+  auditPanel.innerHTML = "";
+  const status = document.createElement("div");
+  status.className = "audit-status";
+  status.textContent = "正在审计小节时值…";
+  auditPanel.appendChild(status);
+  btnAuditMusicXml.disabled = true;
+
+  let resp;
+  try {
+    resp = await fetch("/api/audit-musicxml", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ musicxml: pendingFileText }),
+    });
+  } catch (e) {
+    if (seq !== auditSeq) return; // 迟到响应：已换文件 / 取消，直接丢弃
+    btnAuditMusicXml.disabled = false;
+    status.className = "audit-status audit-error";
+    status.textContent = "无法连接服务器，请确认后端正在运行。";
+    return;
+  }
+  if (seq !== auditSeq) return; // 迟到响应：已换文件 / 取消，直接丢弃
+  btnAuditMusicXml.disabled = false;
+
+  const body = await resp.json();
+  if (!body.ok) {
+    // 缺少 divisions / 非法 duration / 负拍位 / 孤立 chord 等：按源小节
+    // 报错，不显示“通过”
+    renderAuditErrors(body.errors || []);
+    return;
+  }
+  renderAuditResult(body.result);
+});
+
+function renderAuditErrors(errors) {
+  auditPanel.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "audit-status audit-error";
+  if (!errors.length) {
+    box.textContent = "审计失败：服务端未返回错误详情。";
+  } else {
+    const h = document.createElement("h3");
+    h.textContent = `时值审计未通过（${errors.length} 项错误），不显示通过结论：`;
+    box.appendChild(h);
+    const ul = document.createElement("ul");
+    errors.forEach((e) => {
+      const li = document.createElement("li");
+      const where = e.index !== null && e.index !== undefined
+        ? `源第 ${e.index + 1} 小节${e.measure ? `（编号 ${e.measure}）` : ""}`
+        : "整体";
+      li.textContent = `${where}：${e.message}`;
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+  }
+  auditPanel.appendChild(box);
+}
+
+function spanText(ranges) {
+  return ranges.map((r) => `${r.start}–${r.end}`).join("、");
+}
+
+function renderAuditResult(result) {
+  auditPanel.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = `audit-status ${result.passed ? "audit-ok" : "audit-warn"}`;
+  const h = document.createElement("h3");
+  h.textContent = result.passed
+    ? `时值审计通过：${result.measure_count} 个小节各声部均恰好填满，`
+      + "无重叠、无越过小节边界。"
+    : `时值审计发现 ${result.issue_count} 项问题（按小节与声部列出拍位）：`;
+  box.appendChild(h);
+  const tip = document.createElement("div");
+  tip.className = "audit-tip";
+  tip.textContent = "拍位为从小节起点（0）起计的四分音符拍数，"
+    + "以有理数表示（如 3/2）；区间显示为 起点–终点。";
+  box.appendChild(tip);
+  auditPanel.appendChild(box);
+  if (result.passed) return;
+
+  const list = document.createElement("div");
+  list.className = "audit-measures";
+  result.measures.forEach((m) => {
+    const voices = m.voices.filter(
+      (v) => v.missing.length || v.overlaps.length || v.overflows.length);
+    if (!voices.length) return;
+    const block = document.createElement("div");
+    block.className = "audit-measure";
+    const head = document.createElement("div");
+    head.className = "audit-measure-head";
+    head.textContent = `第 ${m.index + 1} 小节（编号 ${m.number}）· 容量 ${m.beats} 拍`;
+    block.appendChild(head);
+    voices.forEach((v) => {
+      const line = document.createElement("div");
+      line.className = "audit-voice";
+      const parts = [];
+      if (v.missing.length) parts.push(`缺拍 ${spanText(v.missing)}`);
+      if (v.overlaps.length) parts.push(`非和弦重叠 ${spanText(v.overlaps)}`);
+      if (v.overflows.length) parts.push(`越过小节边界 ${spanText(v.overflows)}`);
+      line.textContent = `声部 ${v.voice}：${parts.join("；")}`;
+      block.appendChild(line);
+      const occ = document.createElement("div");
+      occ.className = "audit-intervals";
+      occ.textContent = `占用区间：${v.intervals.length ? spanText(v.intervals) : "（无）"}`;
+      block.appendChild(occ);
+    });
+    list.appendChild(block);
+  });
+  auditPanel.appendChild(list);
+}
 
 /* =========================================================================
    MusicXML 结构导出

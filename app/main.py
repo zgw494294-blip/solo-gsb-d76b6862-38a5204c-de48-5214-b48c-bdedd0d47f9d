@@ -12,6 +12,7 @@
 - POST /api/locate     排练记录定位（记录与演奏带任意区间做编辑距离匹配）
 - POST /api/cues       遍次排练提示单（提示按遍次条件命中访问的指定拍）
 - POST /api/excerpt    演奏片段摘谱（选中访问区间 → 可回读的单 part MusicXML）
+- POST /api/audit-musicxml MusicXML 小节时值审计（单 part 各声部时值核对，不改表格）
 """
 
 from __future__ import annotations
@@ -27,12 +28,13 @@ from .diff import compare
 from .excerpt import build_excerpt
 from .expander import MAX_VISITS, expand
 from .locate import locate_records
+from .musicxml_audit import audit_musicxml
 from .musicxml_export import export_musicxml
 from .musicxml_import import import_musicxml
 from .rightfix import fix_right_repeats
 from .solve import solve
 
-app = FastAPI(title="乐谱反复展开台", version="1.6.0")
+app = FastAPI(title="乐谱反复展开台", version="1.7.0")
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -92,6 +94,37 @@ async def api_import_musicxml(request: Request) -> JSONResponse:
     result, errors = import_musicxml(raw["musicxml"])
     if errors:
         # 不支持的结构 / 未配对记号 / 现有校验展开失败：按源小节回报
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "errors": errors},
+        )
+    return JSONResponse(content={"ok": True, "result": result})
+
+
+@app.post("/api/audit-musicxml")
+async def api_audit_musicxml(request: Request) -> JSONResponse:
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content=_INVALID_JSON_BODY)
+
+    if not isinstance(raw, dict) or "musicxml" not in raw:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "errors": [{
+                    "code": "INVALID_REQUEST",
+                    "message": "请求体必须是包含 musicxml（文件文本）的对象。",
+                    "index": None,
+                    "measure": None,
+                }],
+            },
+        )
+
+    result, errors = audit_musicxml(raw["musicxml"])
+    if errors:
+        # 形状 / 拍号 / 时值要素错误：按源小节回报，不给出“通过”结论
         return JSONResponse(
             status_code=422,
             content={"ok": False, "errors": errors},
