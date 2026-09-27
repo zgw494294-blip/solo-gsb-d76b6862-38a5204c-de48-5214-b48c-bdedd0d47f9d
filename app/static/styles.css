@@ -317,6 +317,37 @@ input[type="checkbox"] {
 
 .import-actions { display: flex; gap: 8px; margin-top: 8px; }
 
+/* ---------- MusicXML 小节时值审计 ---------- */
+
+.audit-block {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.audit-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.audit-tip { color: var(--ink-soft); font-size: .74rem; }
+
+.audit-status { margin-top: 6px; color: var(--ink-soft); }
+.audit-status.audit-ok { color: var(--ok); }
+.audit-status.audit-error { color: var(--danger); }
+.audit-status.audit-warn { color: var(--warn); }
+.audit-status h3 { margin: 0 0 6px; font-size: .82rem; }
+.audit-status ul { margin: 0; padding-left: 18px; }
+.audit-status li { margin: 2px 0; }
+
+.audit-result {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 6px 8px;
+}
+.audit-result ul { margin: 0; padding-left: 18px; }
+.audit-result li { margin: 2px 0; }
+
 /* ---------- 节拍器控制条 ---------- */
 
 .stale-banner {

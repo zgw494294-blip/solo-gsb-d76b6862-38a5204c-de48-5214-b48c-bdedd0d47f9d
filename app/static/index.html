@@ -41,6 +41,14 @@
         <button type="button" id="btn-import-confirm" class="btn btn-primary btn-small" disabled>确认替换表格</button>
         <button type="button" id="btn-import-cancel" class="btn btn-small">取消</button>
       </div>
+      <div class="audit-block">
+        <div class="audit-head">
+          <button type="button" id="btn-audit-musicxml" class="btn btn-small" disabled>审计小节时值</button>
+          <span class="audit-tip">只核对所选文件各小节的声部时值（缺拍 / 非和弦重叠 / 越过小节边界），不改动录入表格</span>
+        </div>
+        <div id="audit-status" class="audit-status hidden"></div>
+        <div id="audit-result" class="audit-result hidden"></div>
+      </div>
     </div>
     <div class="table-wrap">
       <table id="measure-table">
@@ -67,7 +75,8 @@
       <strong>速度 BPM</strong> 可填 40~240 的整数：<strong>第 1 小节必填</strong>，其余留空则沿用最近一个速度标记。
       <strong>导入 MusicXML</strong>：选择本地单个 <code>.musicxml</code> 文件（score-partwise、单 part），
       仅读取结构（分母为 4 的拍号、小节起始处整数 BPM、barline 反复与 1~4 编号替代结尾），忽略音符；
-      预览转换结果确认后才替换表格。
+      预览转换结果确认后才替换表格。选择文件后还可点 <strong>审计小节时值</strong> 单独核对各声部时值
+      （缺拍 / 非和弦重叠 / 越过小节边界，按小节 + 声部 + 拍位列出），审计不改动表格；换文件后旧审计结果自动清除。
       <strong>导出 MusicXML</strong>：先复用完整校验与展开（非法谱面按行报错、不下载，且不改动表格与演奏带），
       把当前结构导出为单 part 文件（每行编号、分母为 4 的拍号、显式 BPM、全小节休止符，反复 / 房子 / 同线双终点写成 barline 记号），
       可用“导入 MusicXML”原样往返。

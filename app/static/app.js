@@ -2779,6 +2779,10 @@ function hideImportPanel() {
   btnImportConfirm.disabled = true;
   pendingImport = null;
   fileInput.value = "";
+  clearAudit(); // 面板关闭：审计结果与在途响应一并作废
+  auditFileText = null;
+  auditFileName = "";
+  btnAudit.disabled = true;
 }
 
 btnImport.addEventListener("click", () => fileInput.click());
@@ -2788,6 +2792,10 @@ fileInput.addEventListener("change", async () => {
   const file = fileInput.files && fileInput.files[0];
   if (!file) return;
   clearErrors();
+  clearAudit(); // 换文件：旧审计结果立即清除，在途响应作废
+  auditFileText = null;
+  auditFileName = "";
+  btnAudit.disabled = true;
   importPanel.classList.remove("hidden");
   importPreview.classList.add("hidden");
   btnImportConfirm.disabled = true;
@@ -2801,6 +2809,9 @@ fileInput.addEventListener("change", async () => {
     showImportStatus("读取本地文件失败，请重试。", "error");
     return;
   }
+  auditFileText = text; // 审计与结构导入共用同一份文件文本
+  auditFileName = file.name;
+  btnAudit.disabled = false;
 
   let resp;
   try {
@@ -2928,6 +2939,114 @@ btnImportConfirm.addEventListener("click", () => {
   markExcerptStale(); // 整体替换：摘谱预览同样失效
   doExpand(); // 与“载入示例”一致：替换后立即展开新谱面
 });
+
+/* =========================================================================
+   MusicXML 小节时值审计
+   -------------------------------------------------------------------------
+   - 与结构导入共用同一个文件选择：选中本地文件后点“审计小节时值”单独
+     发起审计（POST /api/audit-musicxml），不替换录入表格；
+   - 硬错误（缺 divisions / 非法 duration / 负拍位 / 孤立 chord 等）按源
+     小节列出，不显示通过；时值问题（缺拍 / 非和弦重叠 / 越过小节边界）
+     按小节 + 声部 + 拍位列出；
+   - 换文件或关闭面板立即清除旧审计；自增序号保证迟到响应不得恢复。
+   ======================================================================== */
+
+const btnAudit = document.getElementById("btn-audit-musicxml");
+const auditStatus = document.getElementById("audit-status");
+const auditResult = document.getElementById("audit-result");
+
+let auditSeq = 0;         // 在途审计请求序号：只接受最新一次的响应
+let auditFileText = null; // 当前选中文件的文本（换文件即清空）
+let auditFileName = "";
+
+function clearAudit() {
+  auditSeq += 1; // 旧审计（含在途响应）一律作废
+  auditStatus.textContent = "";
+  auditStatus.className = "audit-status hidden";
+  auditResult.classList.add("hidden");
+  auditResult.innerHTML = "";
+}
+
+btnAudit.addEventListener("click", async () => {
+  if (auditFileText === null) return;
+  const seq = ++auditSeq;
+  btnAudit.disabled = true;
+  auditResult.classList.add("hidden");
+  auditResult.innerHTML = "";
+  auditStatus.className = "audit-status";
+  auditStatus.textContent = `正在审计 ${auditFileName} 的小节时值 …`;
+
+  let resp;
+  try {
+    resp = await fetch("/api/audit-musicxml", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ musicxml: auditFileText }),
+    });
+  } catch (e) {
+    if (seq !== auditSeq) return;
+    btnAudit.disabled = false;
+    auditStatus.className = "audit-status audit-error";
+    auditStatus.textContent = "无法连接服务器，请确认后端正在运行。";
+    return;
+  }
+  if (seq !== auditSeq) return; // 迟到响应：已换文件 / 面板已关闭，直接丢弃
+  btnAudit.disabled = false;
+
+  const body = await resp.json();
+  if (seq !== auditSeq) return;
+  if (!body.ok) {
+    // 文件范围不符 / 硬错误：按源小节列出，不显示通过
+    renderAuditErrors(body.errors || []);
+    return;
+  }
+  renderAuditResult(body.result);
+});
+
+function renderAuditErrors(errors) {
+  auditResult.classList.add("hidden");
+  auditStatus.className = "audit-status audit-error";
+  auditStatus.innerHTML = "";
+  if (!errors.length) {
+    auditStatus.textContent = "审计失败：服务端未返回错误详情。";
+    return;
+  }
+  const h = document.createElement("h3");
+  h.textContent = `小节时值审计未通过（${errors.length} 项）：`;
+  auditStatus.appendChild(h);
+  const ul = document.createElement("ul");
+  errors.forEach((e) => {
+    const li = document.createElement("li");
+    const where = e.index !== null && e.index !== undefined
+      ? `源第 ${e.index + 1} 小节${e.measure ? `（编号 ${e.measure}）` : ""}`
+      : "整体";
+    li.textContent = `${where}：${e.message}`;
+    ul.appendChild(li);
+  });
+  auditStatus.appendChild(ul);
+}
+
+function renderAuditResult(result) {
+  auditResult.innerHTML = "";
+  if (!result.issue_count) {
+    auditStatus.className = "audit-status audit-ok";
+    auditStatus.textContent = `小节时值审计通过：${result.measure_count} 个小节`
+      + "各声部时值完整，未发现缺拍、非和弦重叠或越过小节边界。";
+    return;
+  }
+  auditStatus.className = "audit-status audit-warn";
+  auditStatus.textContent = `${auditFileName}：发现 ${result.issue_count} 处时值问题`
+    + "（拍位为距小节开头的拍数偏移，0 起）：";
+  const ul = document.createElement("ul");
+  result.issues.forEach((it) => {
+    const li = document.createElement("li");
+    li.textContent = `第 ${it.index + 1} 小节（编号 ${it.measure}）`
+      + ` · 声部 ${it.voice}：${it.message}`;
+    ul.appendChild(li);
+  });
+  auditResult.appendChild(ul);
+  auditResult.classList.remove("hidden");
+}
 
 /* =========================================================================
    MusicXML 结构导出
