@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>乐谱反复展开台</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="title-block">
+    <h1>乐谱反复展开台</h1>
+    <p class="subtitle">录入小节与反复记号，展开实际演奏顺序 · 上限 <strong>512</strong> 次访问</p>
+  </div>
+  <div class="header-actions">
+    <button type="button" id="btn-demo" class="btn btn-ghost">载入示例</button>
+    <button type="button" id="btn-clear" class="btn btn-ghost">清空</button>
+    <button type="button" id="btn-expand" class="btn btn-primary">展开演奏顺序</button>
+  </div>
+</header>
+
+<div id="error-banner" class="error-banner hidden" role="alert"></div>
+
+<main class="panels">
+  <!-- 左：原始结构 -->
+  <section class="panel panel-source" aria-label="原始结构">
+    <div class="panel-head">
+      <h2>原始结构</h2>
+      <div class="panel-tools">
+        <button type="button" id="btn-import-musicxml" class="btn btn-small">导入 MusicXML</button>
+        <input type="file" id="musicxml-file" accept=".musicxml,.xml,application/vnd.recordare.musicxml+xml,text/xml,application/xml" hidden>
+        <button type="button" id="btn-export-musicxml" class="btn btn-small">导出 MusicXML</button>
+        <button type="button" id="btn-add" class="btn btn-small">＋ 添加小节</button>
+        <span id="row-count" class="row-count"></span>
+      </div>
+    </div>
+    <div id="import-panel" class="import-panel hidden">
+      <div id="import-status" class="import-status"></div>
+      <div id="import-preview" class="import-preview hidden"></div>
+      <div class="import-actions">
+        <button type="button" id="btn-import-confirm" class="btn btn-primary btn-small" disabled>确认替换表格</button>
+        <button type="button" id="btn-import-cancel" class="btn btn-small">取消</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="measure-table">
+        <thead>
+          <tr>
+            <th class="col-num">编号</th>
+            <th class="col-beats">拍数</th>
+            <th class="col-tempo">速度<br><code>BPM</code></th>
+            <th class="col-mark">左反复<br><code>|:</code></th>
+            <th class="col-times">次数</th>
+            <th class="col-solve">待求<br><code>×?</code></th>
+            <th class="col-mark">右反复<br><code>:|</code></th>
+            <th class="col-volta">替代结尾遍次</th>
+            <th class="col-note">记号预览</th>
+            <th class="col-op"></th>
+          </tr>
+        </thead>
+        <tbody id="measure-tbody"></tbody>
+      </table>
+    </div>
+    <p class="hint">
+      “次数”仅在勾选左反复时填写（2~4）；替代结尾遍次留空表示普通小节。
+      反复段必须成对且正确嵌套；替代结尾只能引用最内层反复的有效遍次。
+      <strong>速度 BPM</strong> 可填 40~240 的整数：<strong>第 1 小节必填</strong>，其余留空则沿用最近一个速度标记。
+      <strong>导入 MusicXML</strong>：选择本地单个 <code>.musicxml</code> 文件（score-partwise、单 part），
+      仅读取结构（分母为 4 的拍号、小节起始处整数 BPM、barline 反复与 1~4 编号替代结尾），忽略音符；
+      预览转换结果确认后才替换表格。
+      <strong>导出 MusicXML</strong>：先复用完整校验与展开（非法谱面按行报错、不下载，且不改动表格与演奏带），
+      把当前结构导出为单 part 文件（每行编号、分母为 4 的拍号、显式 BPM、全小节休止符，反复 / 房子 / 同线双终点写成 barline 记号），
+      可用“导入 MusicXML”原样往返。
+    </p>
+  </section>
+
+  <!-- 右：展开演奏带 -->
+  <section class="panel panel-result" aria-label="展开后的演奏带">
+    <div class="panel-head">
+      <h2>演奏带</h2>
+      <div class="panel-tools">
+        <span id="result-summary" class="result-summary">尚未展开</span>
+        <button type="button" id="btn-download" class="btn btn-small" disabled>下载 JSON</button>
+      </div>
+    </div>
+    <div id="stale-banner" class="stale-banner hidden">
+      <span>小节、拍数或速度已改动，当前播放计划已失效。</span>
+      <button type="button" id="btn-reexpand" class="btn btn-small">重新展开</button>
+    </div>
+    <div id="transport" class="transport" aria-label="排练节拍器">
+      <div class="transport-buttons">
+        <button type="button" id="btn-play" class="btn btn-transport" disabled
+                title="播放（从定位处/暂停处继续）">▶ 播放</button>
+        <button type="button" id="btn-pause" class="btn btn-transport" disabled
+                title="暂停（记住下一未响节拍）">⏸ 暂停</button>
+        <button type="button" id="btn-stop" class="btn btn-transport" disabled
+                title="停止（回到开头并取消已排队音源）">⏹ 停止</button>
+      </div>
+      <div id="transport-status" class="transport-status">展开后可在此排练</div>
+    </div>
+    <div id="visit-strip" class="visit-strip">
+      <div class="placeholder">点击右上角“展开演奏顺序”，结果将显示在这里。</div>
+    </div>
+    <div id="visit-legend" class="legend hidden"></div>
+  </section>
+
+  <!-- 改谱影响对照（全宽） -->
+  <section class="panel panel-compare" aria-label="改谱影响对照">
+    <div class="panel-head">
+      <h2>改谱影响对照</h2>
+      <div class="panel-tools">
+        <span id="baseline-status" class="baseline-status">尚未设置基准</span>
+        <button type="button" id="btn-set-baseline" class="btn btn-small">将当前谱面设为基准</button>
+        <button type="button" id="btn-compare" class="btn btn-small" disabled>发起对照</button>
+      </div>
+    </div>
+    <div id="compare-note" class="compare-note hidden"></div>
+    <div id="compare-errors" class="compare-errors hidden"></div>
+    <div id="compare-body" class="compare-body hidden">
+      <div id="compare-summary" class="compare-summary"></div>
+      <div id="first-diff" class="first-diff"></div>
+      <ul id="diff-list" class="diff-list"></ul>
+      <div class="align-legend">
+        对齐视图：上排＝基准演奏带 · 下排＝当前演奏带；绿＝新增 · 红＝删去 · 黄＝配对有变更 · 红框＝首次差异；点击列或差异条目定位
+      </div>
+      <div id="align-view" class="align-view"></div>
+    </div>
+    <p class="hint">
+      “将当前谱面设为基准”会先按现有规则校验当前小节，通过后保存<strong>录入行快照</strong>作为基准；再次设置即覆盖旧基准。
+      修改小节后点“发起对照”：两版分别重新校验展开，任一无效时只显示该版错误、不展示过期差异。
+      对照按来源小节编号对两条演奏带求最长公共子序列（重复访问逐次参与配对，最优解不唯一时取配对序号对字典序最小的一组）；
+      未配对访问标为新增/删去，配对访问比较拍数、BPM 与遍次路径，并按每拍 60/BPM 秒累计起拍时间、给出偏移。
+      点击差异条目可定位到对齐列与当前版来源行。
+    </p>
+  </section>
+
+  <!-- 反复次数反求（全宽） -->
+  <section class="panel panel-solve" aria-label="反复次数反求">
+    <div class="panel-head">
+      <h2>反复次数反求</h2>
+      <div class="panel-tools">
+        <span id="solve-selection" class="solve-selection">未勾选待求位置</span>
+        <button type="button" id="btn-solve" class="btn btn-small">开始反求</button>
+      </div>
+    </div>
+    <div class="solve-inputs">
+      <label for="target-input">目标演奏编号序列（逗号或换行分隔，最多 512 项）</label>
+      <textarea id="target-input" rows="4" spellcheck="false"
+        placeholder="按实际演奏顺序填写小节编号，例如：&#10;前奏, A, B, C1, A, B, C2, D, 尾奏&#10;或每行一个编号"></textarea>
+    </div>
+    <div id="solve-note" class="solve-note hidden"></div>
+    <div id="solve-errors" class="solve-errors hidden"></div>
+    <div id="solve-body" class="solve-body hidden">
+      <div id="solve-summary" class="solve-summary"></div>
+      <div id="solve-empty" class="solve-empty hidden"></div>
+      <ul id="solution-list" class="solution-list"></ul>
+      <div id="solve-more" class="solve-more hidden"></div>
+    </div>
+    <p class="hint">
+      在录入表“待求”列勾选 <strong>1~8 个带左反复的小节</strong>作为待求位置，填好目标序列后点“开始反求”：
+      先按现有规则校验录入谱面与目标编号，再枚举待求位置的次数（各取 2~4，其余次数照录入值，
+      小节顺序、反复边界、替代结尾、拍数与 BPM 均不变）；每个组合都须通过现有校验与展开，
+      <strong>超过 512 次访问的组合不计入</strong>。谱面与目标合法但无解时会明确提示。
+      方案按待求位置的录入行顺序组成次数元组，字典序前 10 个可<strong>点击写回表格</strong>；
+      写回后旧演奏带、节拍器计划与改谱对照立即失效，需重新展开或对照后才显示新结果。
+    </p>
+  </section>
+  <!-- 排练记录定位（全宽） -->
+  <section class="panel panel-locate" aria-label="排练记录定位">
+    <div class="panel-head">
+      <h2>排练记录定位</h2>
+      <div class="panel-tools">
+        <label for="locate-tolerance" class="locate-tol-label">容错数</label>
+        <input type="number" id="locate-tolerance" min="0" max="4" step="1" value="0">
+        <button type="button" id="btn-locate" class="btn btn-small">开始定位</button>
+      </div>
+    </div>
+    <div class="solve-inputs">
+      <label for="locate-input">排练记录小节编号（逗号或换行分隔，1~64 项，可含谱面外的误记编号）</label>
+      <textarea id="locate-input" rows="3" spellcheck="false"
+        placeholder="按排练时记下的顺序填写，例如：&#10;A, B, X, C&#10;误记、多记、漏记都会在容错范围内参与匹配"></textarea>
+    </div>
+    <div id="locate-note" class="solve-note hidden"></div>
+    <div id="locate-errors" class="solve-errors hidden"></div>
+    <div id="locate-body" class="locate-body hidden">
+      <div id="locate-summary" class="solve-summary"></div>
+      <div id="locate-empty" class="solve-empty hidden"></div>
+      <ul id="locate-list" class="locate-list"></ul>
+    </div>
+    <p class="hint">
+      先在演奏带中<strong>成功展开</strong>谱面，再把<strong>完整排练记录</strong>（1~64 个编号，逗号或换行分隔，
+      <strong>可包含谱面之外的误记编号</strong>）填入文本框，并设置 <strong>0~4</strong> 的容错数。
+      后端复用现有校验与展开，将记录与演奏带的<strong>任意非空连续区间</strong>做编辑距离匹配：
+      相同计 0，<strong>错记替换、多记删除、漏记补入各计 1</strong>，区间外不计；
+      找出距离不超过容错数的所有区间（不同遍次的同编号区间分别计数），按距离、起点、终点升序显示前 10 项及区间总数，无结果会明确提示。
+      <strong>点击结果项</strong>即在演奏带上高亮对应访问区间（不改动谱面），逐项对齐中标注 相同 / 替换 / 删除 / 补入。
+      谱面、记录或容错数改变后，旧结果自动失效；迟到的响应不会覆盖新结果。
+    </p>
+  </section>
+
+  <!-- 遍次排练提示单（全宽） -->
+  <section class="panel panel-cues" aria-label="遍次排练提示单">
+    <div class="panel-head">
+      <h2>遍次排练提示单</h2>
+      <div class="panel-tools">
+        <span id="cues-count" class="cues-count">0 / 32 条提示</span>
+        <button type="button" id="btn-cue-add" class="btn btn-small">＋ 添加提示</button>
+        <button type="button" id="btn-cues" class="btn btn-small">生成提示单</button>
+      </div>
+    </div>
+    <div id="cue-editor" class="cue-editor"></div>
+    <datalist id="cue-measure-list"></datalist>
+    <div id="cues-note" class="solve-note hidden"></div>
+    <div id="cues-errors" class="solve-errors hidden"></div>
+    <div id="cues-body" class="cues-body hidden">
+      <div id="cues-summary" class="solve-summary"></div>
+      <ul id="cues-list" class="cues-list"></ul>
+    </div>
+    <p class="hint">
+      先<strong>成功展开</strong>演奏带，再录入 <strong>1~32 条提示</strong>：每条指定<strong>来源小节</strong>、
+      从 1 开始的<strong>节内拍序</strong>与 1~80 字<strong>提示语</strong>；可用“＋ 限定遍次”按<strong>反复起点</strong>
+      限定一层或多层遍次（未限定的层级匹配任意遍）。生成时复用现有校验与展开：拍序不得超过该小节拍数，
+      所选反复须至少出现在该小节的一条访问路径中，遍次须在 1~该层次数之间，条件组合没有命中会按提示行报错。
+      匹配按每次访问的完整遍次路径进行（终点后房子的尾部路径也参与，外层重入后内层遍次重新计算）；
+      每条命中提示落在对应访问的指定拍，按此前访问的拍数与生效 BPM 累计秒数，依时间与录入顺序列出。
+      <strong>点击条目</strong>即在演奏带中定位该次访问；谱面或提示改变后旧单自动清除。
+    </p>
+  </section>
+
+  <!-- 演奏片段摘谱（全宽） -->
+  <section class="panel panel-excerpt" aria-label="演奏片段摘谱">
+    <div class="panel-head">
+      <h2>演奏片段摘谱</h2>
+      <div class="panel-tools">
+        <span id="excerpt-count" class="excerpt-count">未选段</span>
+        <button type="button" id="btn-excerpt-pick" class="btn btn-small" disabled>在演奏带上选段</button>
+        <button type="button" id="btn-excerpt-add" class="btn btn-small">＋ 添加选段</button>
+        <button type="button" id="btn-excerpt" class="btn btn-small">生成摘谱</button>
+      </div>
+    </div>
+    <div id="excerpt-editor" class="excerpt-editor"></div>
+    <div id="excerpt-note" class="solve-note hidden"></div>
+    <div id="excerpt-errors" class="solve-errors hidden"></div>
+    <div id="excerpt-body" class="excerpt-body hidden">
+      <div id="excerpt-summary" class="solve-summary"></div>
+      <div class="excerpt-table-wrap">
+        <table class="excerpt-table">
+          <thead>
+            <tr>
+              <th>新编号</th><th>段</th><th>拍数</th><th>生效 BPM</th>
+              <th>原访问序号</th><th>来源编号</th><th>遍次路径</th>
+            </tr>
+          </thead>
+          <tbody id="excerpt-preview"></tbody>
+        </table>
+      </div>
+      <div class="excerpt-actions">
+        <button type="button" id="btn-excerpt-download" class="btn btn-primary btn-small">下载 MusicXML</button>
+      </div>
+    </div>
+    <p class="hint">
+      先<strong>成功展开</strong>演奏带，再按<strong>访问序号</strong>选 1～4 段互不重叠、按演奏先后排列的闭区间
+      （合计 2～64 次访问；同一来源小节在不同遍次的访问可重复选入）。可点“在演奏带上选段”后依次点击
+      各段的起点与终点卡片，也可直接在下方表格填写起止序号。
+      每段首行写入该次访问的<strong>生效 BPM</strong>（段内仅在速度变化时写入，剪接处不会沿用前段速度）；
+      每次访问变成一行独立录入行：编号重排为 1 起连续整数、保留拍数、清除反复与房子记号。
+      生成时复用现有校验与展开，并用现有结构导出生成<strong>单 part MusicXML</strong>；
+      服务端随即回读该文件，<strong>拍数与生效 BPM 逐行对应所选访问才提供下载</strong>。
+      预览列出每个新行的原访问序号、来源编号与遍次路径；原谱与演奏带不受影响，
+      谱面或选段变化后旧预览自动清除。
+    </p>
+  </section>
+
+  <!-- 右反复终点纠错（全宽） -->
+  <section class="panel panel-fix" aria-label="右反复终点纠错">
+    <div class="panel-head">
+      <h2>右反复终点纠错</h2>
+      <div class="panel-tools">
+        <span id="fix-summary" class="fix-summary">只切换各行右反复 :|，最多 4 处</span>
+        <button type="button" id="btn-fix" class="btn btn-small">开始纠错</button>
+      </div>
+    </div>
+    <div id="fix-note" class="fix-note hidden"></div>
+    <div id="fix-errors" class="fix-errors hidden"></div>
+    <div id="fix-body" class="fix-body hidden">
+      <div id="fix-stats" class="fix-stats"></div>
+      <div id="fix-empty" class="fix-empty hidden"></div>
+      <ul id="fix-list" class="fix-list"></ul>
+    </div>
+    <p class="hint">
+      保持小节顺序、编号、拍数、BPM、左反复及次数、替代结尾不变，<strong>只允许切换各行的右反复终点 <code>:|</code></strong>。
+      先复用现有行级校验；<strong>原谱能正常展开时会提示无需纠错</strong>。否则在最多 <strong>4 处</strong>切换内寻找通过现有完整校验、
+      且展开访问数不超过 <strong>512</strong> 的谱面，仅显示切换数最少的前 <strong>5</strong> 个方案（同数按改动行号序列字典序），无方案则明确提示。
+      每个方案列出<strong>新增或删除的终点</strong>与展开后的访问数；<strong>点击方案只把右标记写回表格</strong>——
+      旧演奏带、节拍器计划、改谱对照与反求结果立即失效，需重新展开 / 对照 / 反求。
+    </p>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
